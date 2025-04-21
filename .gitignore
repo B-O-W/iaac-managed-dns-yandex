@@ -1,0 +1,12 @@
+# Ignore real DNS manifest
+records.yaml
+
+# Yandex service account key
+key.json
+
+# Terraform cache & state overrides
+.terraform/
+*.tfvars
+
+# Python cache
+__pycache__/

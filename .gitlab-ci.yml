@@ -1,0 +1,88 @@
+image: registry.yandex.net/terraform-yandex:latest #Build Dockerfile. 
+
+variables:
+  TF_IN_AUTOMATION: "true"
+  STATE_NAME:      "${STATE_NAME}"
+  TF_VAR_yc_cloud_id:  "${YC_CLOUD_ID}"
+  TF_VAR_yc_folder_id: "${YC_FOLDER_ID}"
+  TF_VAR_domain:       "${DOMAIN}"
+  TF_VAR_zone_name:    "${ZONE_NAME}"
+  TF_BACKEND_ADDR:     "${TF_BACKEND_ADDR}"
+  TF_BACKEND_LOCK:     "${TF_BACKEND_LOCK}"
+  TF_BACKEND_USERNAME: "${TF_BACKEND_USER}"
+  TF_BACKEND_TOKEN:    "${GITLAB_ACCESS_TOKEN}"
+
+stages:
+  - validate
+  - plan
+  - apply
+  - update-dns
+
+before_script:
+  - echo "$YC_KEY_JSON" > key.json
+  - export TF_CLI_CONFIG_FILE="$CI_PROJECT_DIR/terraform.rc"
+  - |
+    cat <<EOF > terraform.rc
+    provider_installation {
+      network_mirror {
+        url     = "https://terraform-mirror.yandexcloud.net/"
+        include = ["registry.terraform.io/*/*"]
+      }
+      direct {
+        exclude = ["registry.terraform.io/*/*"]
+      }
+    }
+    EOF
+
+validate:
+  stage: validate
+  script:
+    - terraform init -reconfigure \
+        -backend-config="address=${TF_BACKEND_ADDR}" \
+        -backend-config="lock_address=${TF_BACKEND_LOCK}" \
+        -backend-config="unlock_address=${TF_BACKEND_LOCK}" \
+        -backend-config="username=${TF_BACKEND_USERNAME}" \
+        -backend-config="password=${TF_BACKEND_TOKEN}" \
+        -backend-config="lock_method=POST" \
+        -backend-config="unlock_method=DELETE" \
+        -backend-config="retry_wait_min=5"
+    - terraform validate
+
+plan:
+  stage: plan
+  needs: [validate]
+  script:
+    - terraform init -reconfigure ...   # same backend-config block
+    - terraform plan -out=tfplan -input=false
+  artifacts:
+    paths:
+      - tfplan
+    reports:
+      terraform: tfplan
+
+apply:
+  stage: apply
+  needs: [plan]
+  when: manual
+  only:
+    - main
+  script:
+    - terraform init -reconfigure ...   # same backend-config block
+    - terraform apply -auto-approve tfplan
+
+update_ns_records:
+  stage: update-dns
+  image: python:3.8
+  variables:
+    CLOUDFLARE_API_TOKEN: $CLOUDFLARE_API_TOKEN
+    ZONE_ID:             $ZONE_ID
+  before_script:
+    - python3.8 -m pip install --upgrade pip
+    - python3.8 -m pip install pyyaml requests
+    - chmod +x update_ns_records.py
+  script:
+    - python3.8 update_ns_records.py
+  needs:
+    - apply
+  only:
+    - main

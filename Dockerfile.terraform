@@ -1,0 +1,13 @@
+FROM hashicorp/terraform:1.5.5
+
+ENV PROVIDER_VERSION=0.100.0
+
+RUN mkdir -p /root/.terraform.d/plugins/registry.terraform.io/yandex-cloud/yandex/${PROVIDER_VERSION}/linux_amd64
+
+ADD https://github.com/yandex-cloud/terraform-provider-yandex/releases/download/v${PROVIDER_VERSION}/terraform-provider-yandex_${PROVIDER_VERSION}_linux_amd64.zip /tmp/provider.zip
+
+RUN cd /tmp && unzip provider.zip && \
+    mv terraform-provider-yandex_v${PROVIDER_VERSION} \
+       /root/.terraform.d/plugins/registry.terraform.io/yandex-cloud/yandex/${PROVIDER_VERSION}/linux_amd64/terraform-provider-yandex && \
+    chmod +x /root/.terraform.d/plugins/registry.terraform.io/yandex-cloud/yandex/${PROVIDER_VERSION}/linux_amd64/terraform-provider-yandex && \
+    rm provider.zip

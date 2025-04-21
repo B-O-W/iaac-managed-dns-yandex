@@ -1,93 +1,233 @@
-# IaaC-Managed-DNS-Yandex
+# 🌐 Automated DNS Management for **musa.kz**
 
+A complete infrastructure‑as‑code solution combining **Yandex Cloud DNS** (Terraform) and **Cloudflare NS** synchronization (Python), orchestrated via **GitLab CI/CD** or **GitHub Actions**.
 
+---
 
-## Getting started
+## 📖 Overview
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+1. **Terraform** provisions and manages Yandex Cloud DNS zones and A/CNAME records.
+2. **Python Script** synchronizes NS delegation in Cloudflare:
+   - Creates new NS records
+   - Updates existing NS if value changes
+   - Converts A → NS when needed
+   - Deletes obsolete NS entries
+3. **CI/CD** automates the pipeline:
+   `validate → plan → apply (manual) → update‑dns`.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+![Architecture Diagram](docs/architecture.png)
 
-## Add your files
+---
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+## 📚 Official Documentation
+
+- **Terraform Yandex Provider**: https://registry.terraform.io/providers/yandex-cloud/yandex/latest
+- **Yandex IAM Service Accounts**: https://cloud.yandex.com/docs/iam/operations/sa/create
+- **Cloudflare API**: https://api.cloudflare.com/
+- **GitLab Terraform State**: https://docs.gitlab.com/ee/user/infrastructure/terraform_state/
+
+## 🛠️ Prerequisites
+
+### 1. Yandex Cloud Service Account for Terraform
+
+1. **Create a service account** in Yandex Cloud Console:  
+   - Navigate to **IAM & Admin → Service accounts → Create service account**.  
+   - Assign roles: `dns.editor` and `folderViewer` (or higher).  
+2. **Download JSON key** and store as `YC_KEY_JSON` secret in CI.
+3. **Terraform Yandex Provider**:  
+   ```hcl
+   provider "yandex" {
+     service_account_key_file = var.yc_key_json
+     cloud_id                 = var.yc_cloud_id
+     folder_id                = var.yc_folder_id
+     zone                      = var.domain
+   }
+   ```
+   See [Terraform Yandex Provider Docs](https://registry.terraform.io/providers/yandex-cloud/yandex/latest/docs).
+
+### 2. Cloudflare API Token
+
+1. Log in to Cloudflare Dashboard.  
+2. **My Profile → API Tokens → Create Token**.  
+3. Use **DNS Editor** template, scope to your zone.  
+4. Save token as `CLOUDFLARE_API_TOKEN` and zone ID as `ZONE_ID` in CI.
+
+### 3. GitLab HTTP Backend for Terraform State
+
+Store your Terraform state in GitLab:  
+```hcl
+terraform {
+  backend "http" {
+    address        = var.tf_backend_address
+    lock_address   = var.tf_backend_lock_address
+    unlock_address = var.tf_backend_lock_address
+    username       = var.tf_backend_user
+    password       = var.gitlab_access_token
+    lock_method    = "POST"
+    unlock_method  = "DELETE"
+    retry_wait_min = 5
+  }
+}
+```
+Configure `TF_BACKEND_ADDRESS`, `TF_BACKEND_LOCK_ADDRESS`, `TF_BACKEND_USER`, and `GITLAB_ACCESS_TOKEN` via CI variables.
+
+---
+
+## 📂 Repository Structure
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.musa.kz/iaac/iaac-managed-dns-yandex.git
-git branch -M main
-git push -uf origin main
+├── main.tf                  # Terraform resources for Yandex DNS
+├── variables.tf             # Input variables (no defaults)
+├── records.example.yaml     # Template with placeholders
+├── records.yaml             # Ignored; populated by CI
+├── update_ns_records.py     # Python NS sync script
+├── .gitlab-ci.yml           # GitLab CI pipeline definition
+├── .github/workflows/       # GitHub Actions pipelines (optional)
+├── docs/
+│   ├── architecture.png     # Architecture diagram
+│   └── screenshots/
+│       ├── plan.png         # Terraform plan screenshot placeholder
+│       └── ns-sync.png      # NS sync log screenshot placeholder
+└── terraform.rc             # Provider mirror config
+``` 
+
+---
+
+## 🛳️ Building the Custom Terraform Docker Image
+
+We use a custom Docker image to ensure all Terraform providers and Yandex Cloud plugins are pre‑installed. Follow these steps:
+
+1. **Create a Dockerfile** named `Dockerfile.terraform` in the repo root:
+   ```dockerfile
+   # Dockerfile.terraform
+   FROM hashicorp/terraform:1.5.0
+
+   # Install Yandex Cloud provider plugin and necessary tools
+   RUN mkdir -p /terraform/plugins && \
+       curl -sSL "https://github.com/yandex-cloud/terraform-provider-yandex/releases/download/v0.83.0/terraform-provider-yandex_0.83.0_linux_amd64.tar.gz" \
+         | tar -xz -C /terraform/plugins && \
+       apk add --no-cache bash jq
+
+   # Point Terraform to plugin directory
+   ENV TF_PLUGIN_CACHE_DIR=/terraform/plugins
+
+   ENTRYPOINT ["terraform"]
+   ```
+
+2. **Build the image** locally:
+   ```bash
+   docker build -f Dockerfile.terraform \
+     -t cr.yandexcloud.kz/crk6d6loj06cdtbpo5qf/terraform-yandex:latest .
+   ```
+
+3. **Push to your registry**:
+   ```bash
+   docker push cr.yandexcloud.kz/crk6d6loj06cdtbpo5qf/terraform-yandex:latest
+   ```
+
+4. **Verify** by running:
+   ```bash
+   docker run --rm cr.yandexcloud.kz/crk6d6loj06cdtbpo5qf/terraform-yandex:latest version
+   ```
+
+---
+
+## ⚙️ CI/CD Setup
+
+### Required CI Variables (GitLab or GitHub Secrets)
+
+| Name                     | Description                                         |
+|--------------------------|-----------------------------------------------------|
+| `YC_KEY_JSON`            | Yandex service account JSON                         |
+| `YC_CLOUD_ID`            | Yandex Cloud ID                                     |
+| `YC_FOLDER_ID`           | Yandex Folder ID                                    |
+| `DOMAIN`                 | Root domain (e.g. `musa.kz`)                        |
+| `ZONE_NAME`              | Yandex DNS zone name                                |
+| `GITLAB_ACCESS_TOKEN`    | Token for Terraform HTTP backend                    |
+| `TF_BACKEND_ADDRESS`     | HTTP backend address                                |
+| `TF_BACKEND_LOCK_ADDRESS`| HTTP backend lock address                           |
+| `TF_BACKEND_USER`        | HTTP backend username                               |
+| `CLOUDFLARE_API_TOKEN`   | Cloudflare API token (DNS edit)                     |
+| `ZONE_ID`                | Cloudflare zone identifier                          |
+| `DEV_IP`, `PROD_IP`, …   | DNS record IP placeholders                           |
+
+### GitLab CI Example
+
+```yaml
+stages:
+  - validate
+  - plan
+  - apply
+  - update-dns
+
+validate:
+  stage: validate
+  image: registry.yandex.net/terraform-yandex:latest
+  script:
+    - terraform init -reconfigure \
+        -backend-config="address=${TF_BACKEND_ADDRESS}" \
+        -backend-config="lock_address=${TF_BACKEND_LOCK_ADDRESS}" \
+        -backend-config="username=${TF_BACKEND_USER}" \
+        -backend-config="password=${GITLAB_ACCESS_TOKEN}" \
+        -backend-config="lock_method=POST" \
+        -backend-config="unlock_method=DELETE" \
+        -backend-config="retry_wait_min=5"
+    - terraform validate
+
+plan:
+  stage: plan
+  needs: [validate]
+  script:
+    - terraform init -reconfigure ...
+    - terraform plan -out=tfplan -input=false
+  artifacts:
+    paths:
+      - tfplan
+    reports:
+      terraform: tfplan
+
+apply:
+  stage: apply
+  needs: [plan]
+  when: manual
+  only: [main]
+  script:
+    - terraform init -reconfigure ...
+    - terraform apply -auto-approve tfplan
+
+update_ns_records:
+  stage: update-dns
+  image: python:3.8
+  script:
+    - pip install --upgrade pip
+    - pip install pyyaml requests
+    - chmod +x update_ns_records.py
+    - python3 update_ns_records.py
+  needs: [apply]
+  only: [main]
 ```
 
-## Integrate with your tools
+![Terraform Plan](docs/screenshots/plan.png)
 
-- [ ] [Set up project integrations](https://gitlab.musa.kz/iaac/iaac-managed-dns-yandex/-/settings/integrations)
+---
 
-## Collaborate with your team
+## 📜 How **update_ns_records.py** Works
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+1. **Load `records.yaml`** — your desired subdomain list (placeholders replaced by CI).  
+2. **Fetch** existing DNS records from Cloudflare via API.  
+3. **Sync logic**:
+   - **Update** NS if present but content differs.  
+   - **Convert** A → NS if an A record exists.  
+   - **Create** new NS if none exist.  
+   - **Delete** obsolete NS not in manifest.  
+4. **Output** clear logs:
+   - `✔ NS for sub.domain OK`
+   - `↻ Updating NS for sub.domain`
+   - `➕ Creating NS for sub.domain`
+   - `🗑 Deleting obsolete NS for old.domain`
 
-## Test and Deploy
+![NS Sync Log](docs/screenshots/ns-sync.png)
 
-Use the built-in continuous integration in GitLab.
+---
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+*© 2025 Musa.kz Elbrus Mammadov DevOps*

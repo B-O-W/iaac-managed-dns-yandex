@@ -1,0 +1,16 @@
+# records.example.yaml
+
+records:
+  - name: "dev"
+    type: "A"
+    ttl: 300
+    data:
+      - "${DEV_IP}"
+
+  - name: "dev-api"
+    type: "A"
+    ttl: 300
+    data:
+      - "${DEV_API_IP}"
+
+  # Add your other names here, using placeholders for data [...]
